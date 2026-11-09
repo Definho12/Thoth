@@ -95,6 +95,7 @@ import androidx.compose.ui.unit.sp
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import com.guilherme.thoth.core.Analyze
 import com.guilherme.thoth.core.Channel
 import com.guilherme.thoth.core.Img
 import com.guilherme.thoth.core.Ink
@@ -629,6 +630,12 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
     val tokens = pages?.let { Transcribe.documentTokens(scan.name, it, minConf) }
     val text = tokens?.joinToString("") { it.text }
     var colors by remember { mutableStateOf(true) }
+    var analyzing by remember { mutableStateOf(false) }
+    if (analyzing && text != null) {
+        BackHandler { analyzing = false }
+        AnalysisScreen(scan.name, text, onBack = { analyzing = false })
+        return
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -717,11 +724,107 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
                         val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text).putExtra(Intent.EXTRA_SUBJECT, scan.name)
                         ctx.startActivity(Intent.createChooser(send, "Enviar texto"))
                     })
+                    Pill("Analisar", selected = true, onClick = { analyzing = true })
                     Pill("Ler de novo", onClick = {
                         store.dir(scan.id).listFiles()?.filter { it.name.startsWith("ocr_") }?.forEach { it.delete() }
                         round++
                     })
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalysisScreen(name: String, text: String, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    val r = remember(text) { Analyze.analyze(text) }
+    var copied by remember { mutableStateOf(false) }
+    val summary = remember(r) {
+        buildString {
+            append(name).append(" — análise automática\n\n")
+            append("Proprietário(s) atual(is):\n")
+            r.holders.sortedByDescending { it.first.amount }.forEach { (h, share) ->
+                append("• ").append(h.names.joinToString(" e ")).append(": ")
+                append(if (r.remainingM2 != null) Analyze.fmtArea(h.amount) + " (" + Analyze.pct(share) + ")" else Analyze.pct(share)).append('\n')
+            }
+            r.totalM2?.let { append("\nÁrea na abertura: ").append(Analyze.fmtArea(it)).append('\n') }
+            if (r.leftM2 > 0) append("Saiu da matrícula: ").append(Analyze.fmtArea(r.leftM2)).append('\n')
+            r.remainingM2?.let { append("Área restante na matrícula: ").append(Analyze.fmtArea(it)).append('\n') }
+            if (r.liens.isNotEmpty()) append("\nÔnus: ").append(r.liens.joinToString("; ")).append('\n')
+            append("\nPasso a passo:\n")
+            r.acts.forEach { a -> append("${a.label}${a.date?.let { " ($it)" } ?: ""}: ${a.summary}\n") }
+        }
+    }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Pill("‹", onClick = onBack)
+            Spacer(Modifier.width(10.dp))
+            Text("Análise", color = C.text, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            Pill(if (copied) "Copiado" else "Copiar resumo", onClick = {
+                ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(name, summary)); copied = true
+            })
+        }
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp).padding(bottom = 20.dp)) {
+            Card("Proprietário atual") {
+                if (r.holders.isEmpty()) Text("Não consegui descobrir.", color = C.warn, fontSize = 14.sp)
+                r.holders.sortedByDescending { it.first.amount }.forEach { (h, share) ->
+                    Column(Modifier.padding(vertical = 5.dp)) {
+                        Text(h.names.joinToString(" e "), color = C.text, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            (if (r.remainingM2 != null) Analyze.fmtArea(h.amount) + " · " else "") + Analyze.pct(share) + " do que restou" +
+                                " · desde " + h.since + (if (h === r.latest) " · último a adquirir" else ""),
+                            color = if (h === r.latest) C.accent else C.dim, fontSize = 13.sp,
+                        )
+                    }
+                }
+            }
+            Card("Área") {
+                AreaRow("Na abertura da matrícula", r.totalM2?.let { Analyze.fmtArea(it) } ?: "não encontrada")
+                AreaRow("Saiu da matrícula", if (r.leftM2 > 0) Analyze.fmtArea(r.leftM2) else "nada")
+                AreaRow("Ainda na matrícula", r.remainingM2?.let { Analyze.fmtArea(it) } ?: "—", strong = true)
+            }
+            if (r.liens.isNotEmpty()) Card("Ônus ativos") { r.liens.forEach { Text("• $it", color = C.text, fontSize = 14.sp) } }
+            if (r.warnings.isNotEmpty()) Card("Atenção") { r.warnings.forEach { Text("• $it", color = C.warn, fontSize = 13.sp) } }
+            Card("Passo a passo") {
+                r.acts.forEach { a -> ActRow(a) }
+            }
+            Text(
+                "Leitura automática para ajudar, feita no celular. Confira com a matrícula: não substitui certidão nem a análise de um profissional.",
+                color = C.dim, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun Card(title: String, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(12.dp)).background(C.surface).padding(14.dp)) {
+        Text(title, color = C.dim, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp))
+        content()
+    }
+}
+
+@Composable
+private fun AreaRow(label: String, value: String, strong: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Text(label, color = C.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        Text(value, color = if (strong) C.accent else C.text, fontSize = 14.sp, fontWeight = if (strong) FontWeight.Medium else FontWeight.Normal)
+    }
+}
+
+@Composable
+private fun ActRow(a: Analyze.Act) {
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 6.dp)) {
+        Row {
+            Text(a.label, color = if (a.canceled) C.dim else C.accent, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.width(64.dp))
+            Column(Modifier.weight(1f)) {
+                Text(a.summary, color = if (a.canceled) C.dim else C.text, fontSize = 13.sp)
+                a.date?.let { Text(it, color = C.dim, fontSize = 12.sp) }
+                a.notes.forEach { Text(it, color = C.warn, fontSize = 12.sp) }
+                if (open) Text(a.text, color = C.dim, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(top = 4.dp))
+                else Text("ver trecho", color = C.dim, fontSize = 11.sp)
             }
         }
     }
