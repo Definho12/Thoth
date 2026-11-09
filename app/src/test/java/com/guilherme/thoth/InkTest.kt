@@ -9,25 +9,56 @@ import com.guilherme.thoth.core.Settings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.awt.image.BufferedImage
 import java.io.File
-import javax.imageio.ImageIO
+import java.util.zip.CRC32
+import java.util.zip.Deflater
+import java.util.zip.DeflaterOutputStream
+import java.util.zip.GZIPInputStream
 import kotlin.math.abs
 
 class InkTest {
 
+    /** Reads the sample page (gzip PPM, so the test needs no image library). */
     private fun sample(): Img {
-        val bi = ImageIO.read(javaClass.getResourceAsStream("/exemplo.jpg"))
-        val w = bi.width; val h = bi.height
-        return Img.fromArgb(bi.getRGB(0, 0, w, h, null, 0, w), w, h)
+        val data = GZIPInputStream(javaClass.getResourceAsStream("/exemplo.ppm.gz")!!).readBytes()
+        var pos = 0
+        fun token(): String {
+            while (data[pos].toInt().toChar().isWhitespace()) pos++
+            val st = pos; while (!data[pos].toInt().toChar().isWhitespace()) pos++
+            return String(data, st, pos - st)
+        }
+        check(token() == "P6"); val w = token().toInt(); val h = token().toInt(); token(); pos++
+        val px = IntArray(w * h) { i ->
+            val o = pos + i * 3
+            (0xFF shl 24) or ((data[o].toInt() and 255) shl 16) or ((data[o + 1].toInt() and 255) shl 8) or (data[o + 2].toInt() and 255)
+        }
+        return Img.fromArgb(px, w, h)
     }
 
+    /** Writes a PNG by hand (rows + deflate + checksums). */
     private fun save(img: Img, name: String) {
         val dir = System.getProperty("amostras") ?: return
         File(dir).mkdirs()
-        val bi = BufferedImage(img.w, img.h, BufferedImage.TYPE_INT_RGB)
-        bi.setRGB(0, 0, img.w, img.h, img.toArgb(), 0, img.w)
-        ImageIO.write(bi, "png", File(dir, "$name.png"))
+        val argb = img.toArgb()
+        val raw = java.io.ByteArrayOutputStream()
+        DeflaterOutputStream(raw, Deflater(6)).use { z ->
+            val row = ByteArray(1 + img.w * 3)
+            for (y in 0 until img.h) {
+                for (x in 0 until img.w) {
+                    val c = argb[y * img.w + x]
+                    row[1 + x * 3] = (c shr 16).toByte(); row[2 + x * 3] = (c shr 8).toByte(); row[3 + x * 3] = c.toByte()
+                }
+                z.write(row)
+            }
+        }
+        val out = java.io.DataOutputStream(File(dir, "$name.png").outputStream())
+        fun chunk(type: String, body: ByteArray) {
+            out.writeInt(body.size); val t = type.toByteArray(); out.write(t); out.write(body)
+            out.writeInt(CRC32().apply { update(t); update(body) }.value.toInt())
+        }
+        out.write(byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10))
+        chunk("IHDR", java.nio.ByteBuffer.allocate(13).putInt(img.w).putInt(img.h).put(8).put(2).put(0).put(0).put(0).array())
+        chunk("IDAT", raw.toByteArray()); chunk("IEND", ByteArray(0)); out.close()
     }
 
     /** Average brightness of a rectangle given in fractions of the page. */
@@ -94,8 +125,7 @@ class InkTest {
     }
 
     @Test fun pdfHasAllPages() {
-        val bi = BufferedImage(40, 60, BufferedImage.TYPE_INT_RGB)
-        val jpg = java.io.ByteArrayOutputStream().also { ImageIO.write(bi, "jpg", it) }.toByteArray()
+        val jpg = byteArrayOf(-1, -40, -1, -39) // the writer does not read the picture, any bytes will do
         val out = java.io.ByteArrayOutputStream()
         Pdf.write(out, listOf(PdfPage(jpg, 40, 60), PdfPage(jpg, 40, 60), PdfPage(jpg, 40, 60)), "Matrícula 321")
         val bytes = out.toByteArray(); val text = String(bytes, Charsets.ISO_8859_1)
