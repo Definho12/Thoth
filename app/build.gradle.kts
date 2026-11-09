@@ -9,7 +9,8 @@ android {
     defaultConfig {
         applicationId = "com.guilherme.thoth"
         minSdk = 29; targetSdk = 35
-        versionCode = 1; versionName = "0.1"
+        versionCode = 2; versionName = "0.2"
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
     signingConfigs {
         create("release") {
@@ -38,4 +39,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 }

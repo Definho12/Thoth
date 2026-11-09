@@ -1,6 +1,8 @@
 package com.guilherme.thoth
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ContextWrapper
@@ -44,6 +46,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -80,6 +83,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -93,6 +99,8 @@ import com.guilherme.thoth.core.Channel
 import com.guilherme.thoth.core.Img
 import com.guilherme.thoth.core.Ink
 import com.guilherme.thoth.core.Method
+import com.guilherme.thoth.core.OLine
+import com.guilherme.thoth.core.Transcribe
 import com.guilherme.thoth.core.Settings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -191,12 +199,29 @@ fun ThothApp() {
         onMessage = { message = it },
     )
 
+    val folder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        if (tree != null) {
+            busy = true; message = null
+            scope.launch {
+                val s = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val (name, uris) = Ocr.imagesInFolder(ctx, tree)
+                        if (uris.isEmpty()) null else store.addPages(store.create(name), uris)
+                    }.getOrNull()
+                }
+                busy = false
+                if (s == null) message = "Não achei fotos nessa pasta." else { refresh(); open = s }
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(C.bg).systemBarsPadding()) {
         val s = open
         if (s == null) {
             Home(
                 scans = scans, store = store, busy = busy, message = message,
                 onNew = { message = null; newScan() },
+                onFolder = { folder.launch(null) },
                 onOpen = { open = it },
                 onExample = {
                     scope.launch {
@@ -221,7 +246,7 @@ fun ThothApp() {
 @Composable
 private fun Home(
     scans: List<Scan>, store: Store, busy: Boolean, message: String?,
-    onNew: () -> Unit, onOpen: (Scan) -> Unit, onExample: () -> Unit,
+    onNew: () -> Unit, onFolder: () -> Unit, onOpen: (Scan) -> Unit, onExample: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(28.dp))
@@ -230,7 +255,11 @@ private fun Home(
         Spacer(Modifier.height(22.dp))
         if (busy) Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(color = C.accent, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
-        } else BigButton("Nova matrícula", primary = true, onClick = onNew)
+        } else {
+            BigButton("Nova matrícula", primary = true, onClick = onNew)
+            Spacer(Modifier.height(10.dp))
+            BigButton("Importar pasta de fotos", onClick = onFolder)
+        }
         if (message != null) Text(message, color = C.warn, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
         Spacer(Modifier.height(18.dp))
         if (scans.isEmpty()) {
@@ -381,6 +410,13 @@ private fun ScanScreen(initial: Scan, store: Store, onBack: () -> Unit, onDelete
         }
     }
 
+    var showText by remember { mutableStateOf(false) }
+    if (showText) {
+        BackHandler { showText = false }
+        TextScreen(scan, store, onBack = { showText = false })
+        return
+    }
+
     if (grid && previewImg != null) {
         BackHandler { grid = false }
         Grid(previewImg!!, perMethod.toMap() + (scan.method to scan.settings), onPick = { setMethod(it); grid = false }, onBack = { grid = false })
@@ -397,9 +433,11 @@ private fun ScanScreen(initial: Scan, store: Store, onBack: () -> Unit, onDelete
                 modifier = Modifier.weight(1f).clickable { renaming = true }.padding(vertical = 6.dp),
             )
             Spacer(Modifier.width(8.dp))
+            if (scan.pages.isNotEmpty()) Pill("Texto", onClick = { store.save(scan); showText = true })
+            Spacer(Modifier.width(8.dp))
             val e = exporting
             Pill(
-                if (e != null) "Página $e de ${scan.pages.size}…" else "Gerar PDF",
+                if (e != null) "PDF $e/${scan.pages.size}…" else "PDF",
                 selected = true, onClick = { exportPdf() },
             )
         }
@@ -561,6 +599,113 @@ private fun ScanScreen(initial: Scan, store: Store, onBack: () -> Unit, onDelete
             },
             containerColor = C.surface,
         )
+    }
+}
+
+@Composable
+private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pages by remember { mutableStateOf<List<List<OLine>>?>(null) }
+    var progress by remember { mutableIntStateOf(0) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var minConf by remember { mutableFloatStateOf(0.6f) }
+    var round by remember { mutableIntStateOf(0) }
+    var toast by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(toast) { if (toast != null) { delay(3000); toast = null } }
+    LaunchedEffect(round) {
+        pages = null; error = null
+        try {
+            val res = mutableListOf<List<OLine>>()
+            for ((i, p) in scan.pages.withIndex()) {
+                progress = i + 1
+                res += withContext(Dispatchers.Default) { Ocr.readPage(store, scan, p) }
+            }
+            pages = res
+        } catch (e: Throwable) {
+            error = "Não consegui ler as páginas: ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+    val text = pages?.let { Transcribe.document(scan.name, it, minConf) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Pill("‹", onClick = onBack)
+            Spacer(Modifier.width(10.dp))
+            Text("Texto", color = C.text, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            if (text != null) {
+                Pill("Copiar", onClick = {
+                    ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(scan.name, text))
+                    toast = "Texto copiado"
+                })
+                Spacer(Modifier.width(8.dp))
+                Pill("Salvar", selected = true, onClick = {
+                    scope.launch {
+                        toast = try {
+                            withContext(Dispatchers.IO) { Photos.exportText(ctx, scan.name, text) }
+                            "Salvo em Downloads/Thoth"
+                        } catch (e: Throwable) { "Não consegui salvar: ${e.message}" }
+                    }
+                })
+            }
+        }
+        val t = toast
+        if (t != null) Text(t, color = C.accent, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp))
+        if (text == null) {
+            Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                val err = error
+                if (err != null) {
+                    Text(err, color = C.warn, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(24.dp))
+                    Pill("Tentar de novo", onClick = { round++ })
+                } else {
+                    CircularProgressIndicator(color = C.accent, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.height(12.dp))
+                    Text("Lendo página $progress de ${scan.pages.size}…", color = C.dim, fontSize = 14.sp)
+                }
+            }
+        } else {
+            val shown = remember(text) {
+                buildAnnotatedString {
+                    val parts = text.split(Transcribe.ILEGIVEL)
+                    parts.forEachIndexed { i, part ->
+                        append(part)
+                        if (i < parts.size - 1) withStyle(SpanStyle(color = C.warn)) { append(Transcribe.ILEGIVEL) }
+                    }
+                }
+            }
+            val count = text.split(Transcribe.ILEGIVEL).size - 1
+            Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(10.dp)).background(C.surface)) {
+                SelectionContainer(Modifier.verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(12.dp)) {
+                    Text(shown, color = C.text, fontSize = 12.sp, lineHeight = 17.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Marcar (ilegível) abaixo de", color = C.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("${(minConf * 100).toInt()}% de certeza", color = C.dim, fontSize = 13.sp)
+                }
+                Slider(
+                    value = minConf, onValueChange = { minConf = it }, valueRange = 0.2f..0.95f,
+                    colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.line),
+                    modifier = Modifier.height(34.dp),
+                )
+                Text(
+                    (if (count == 0) "Nenhum trecho ilegível." else if (count == 1) "1 trecho ilegível." else "$count trechos ilegíveis.") +
+                        " Nada é corrigido: erros do original ficam como estão. A leitura pode confundir letras parecidas, então confira com a foto.",
+                    color = C.dim, fontSize = 12.sp,
+                )
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pill("Compartilhar", onClick = {
+                        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text).putExtra(Intent.EXTRA_SUBJECT, scan.name)
+                        ctx.startActivity(Intent.createChooser(send, "Enviar texto"))
+                    })
+                    Pill("Ler de novo", onClick = {
+                        store.dir(scan.id).listFiles()?.filter { it.name.startsWith("ocr_") }?.forEach { it.delete() }
+                        round++
+                    })
+                }
+            }
+        }
     }
 }
 

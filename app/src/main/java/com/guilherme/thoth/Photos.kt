@@ -77,6 +77,22 @@ object Photos {
         return uri
     }
 
+    /** Saves the text as a new .txt file in Downloads/Thoth. */
+    fun exportText(ctx: Context, name: String, text: String): Uri {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, safeName(name) + ".txt")
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Thoth")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val r = ctx.contentResolver
+        val uri = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("não consegui criar o arquivo")
+        r.openOutputStream(uri)!!.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0)
+        r.update(uri, values, null, null)
+        return uri
+    }
+
     private fun safeName(s: String) = s.replace(Regex("[\\\\/:*?\"<>|]"), "-").trim().ifEmpty { "Matrícula" }
 
     fun process(src: Img, m: Method, s: Settings) = Ink.process(src, m, s)
