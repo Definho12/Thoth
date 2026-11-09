@@ -77,21 +77,29 @@ object Photos {
         return uri
     }
 
-    /** Saves the text as a new .txt file in Downloads/Thoth. */
-    fun exportText(ctx: Context, name: String, text: String): Uri {
+    /** Saves a new file in Downloads/Thoth (never overwrites: Android adds " (1)" if the name exists). */
+    fun exportFile(ctx: Context, fileName: String, mime: String, write: (java.io.OutputStream) -> Unit): Uri {
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, safeName(name) + ".txt")
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, mime)
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Thoth")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val r = ctx.contentResolver
         val uri = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("não consegui criar o arquivo")
-        r.openOutputStream(uri)!!.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        r.openOutputStream(uri)!!.use(write)
         values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0)
         r.update(uri, values, null, null)
         return uri
     }
+
+    fun exportText(ctx: Context, name: String, text: String) =
+        exportFile(ctx, safeName(name) + ".txt", "text/plain") { it.write(text.toByteArray(Charsets.UTF_8)) }
+
+    const val DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    fun exportDocx(ctx: Context, name: String, tokens: List<com.guilherme.thoth.core.Transcribe.Tok>, minConf: Float) =
+        exportFile(ctx, safeName(name) + " (com cores).docx", DOCX) { com.guilherme.thoth.core.Docx.write(it, name, tokens, minConf) }
 
     private fun safeName(s: String) = s.replace(Regex("[\\\\/:*?\"<>|]"), "-").trim().ifEmpty { "Matrícula" }
 

@@ -631,6 +631,53 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
     val text = tokens?.joinToString("") { it.text }
     var colors by remember { mutableStateOf(true) }
     var analyzing by remember { mutableStateOf(false) }
+    var exportOpen by remember { mutableStateOf(false) }
+    var exported by remember { mutableStateOf<Pair<Uri, String>?>(null) }
+    fun export(docx: Boolean) {
+        exportOpen = false
+        val toks = tokens ?: return
+        val plain = text ?: return
+        scope.launch {
+            try {
+                exported = withContext(Dispatchers.IO) {
+                    if (docx) Photos.exportDocx(ctx, scan.name, toks, minConf) to Photos.DOCX
+                    else Photos.exportText(ctx, scan.name, plain) to "text/plain"
+                }
+            } catch (e: Throwable) { toast = "Não consegui salvar: ${e.message}" }
+        }
+    }
+    if (exportOpen) AlertDialog(
+        onDismissRequest = { exportOpen = false },
+        title = { Text("Exportar o texto") },
+        text = {
+            Column {
+                Text("Word com cores (.docx)", color = C.accent, fontSize = 16.sp, modifier = Modifier.fillMaxWidth().clickable { export(true) }.padding(vertical = 8.dp))
+                Text("Abre no computador (Word, LibreOffice, Google Docs) com as mesmas cores da tela. Dá para corrigir lá.", color = C.dim, fontSize = 13.sp)
+                Spacer(Modifier.height(14.dp))
+                Text("Texto simples (.txt)", color = C.accent, fontSize = 16.sp, modifier = Modifier.fillMaxWidth().clickable { export(false) }.padding(vertical = 8.dp))
+                Text("Só o texto, sem cores.", color = C.dim, fontSize = 13.sp)
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = { exportOpen = false }) { Text("Cancelar", color = C.text) } },
+        containerColor = C.surface,
+    )
+    exported?.let { (uri, mime) ->
+        AlertDialog(
+            onDismissRequest = { exported = null },
+            title = { Text("Salvo em Downloads/Thoth") },
+            text = { Text("Para levar ao computador, compartilhe (WhatsApp, e-mail, Google Drive) ou copie pela pasta Downloads/Thoth com o cabo USB.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    exported = null
+                    val send = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    ctx.startActivity(Intent.createChooser(send, "Enviar arquivo"))
+                }) { Text("Compartilhar", color = C.accent) }
+            },
+            dismissButton = { TextButton(onClick = { exported = null }) { Text("Ok", color = C.text) } },
+            containerColor = C.surface,
+        )
+    }
     if (analyzing && text != null) {
         BackHandler { analyzing = false }
         AnalysisScreen(scan.name, text, onBack = { analyzing = false })
@@ -648,14 +695,7 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
                     toast = "Texto copiado"
                 })
                 Spacer(Modifier.width(8.dp))
-                Pill("Salvar", selected = true, onClick = {
-                    scope.launch {
-                        toast = try {
-                            withContext(Dispatchers.IO) { Photos.exportText(ctx, scan.name, text) }
-                            "Salvo em Downloads/Thoth"
-                        } catch (e: Throwable) { "Não consegui salvar: ${e.message}" }
-                    }
-                })
+                Pill("Exportar", selected = true, onClick = { exportOpen = true })
             }
         }
         val t = toast

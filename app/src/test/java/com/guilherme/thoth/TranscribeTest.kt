@@ -58,4 +58,16 @@ class TranscribeTest {
         assertEquals(listOf(3, 2, 1, 0), t.map { Transcribe.level(it, 0.6f) })
         assertEquals(0.1f, t.last().conf!!, 1e-6f)
     }
+
+    @Test fun strangeLettersBecomeNormalAndDoubtful() {
+        assertEquals("dado" to true, Transcribe.clean("đado"))
+        assertEquals("casa" to true, Transcribe.clean("cⱥsa"))
+        assertEquals("ano" to true, Transcribe.clean("āno"))
+        assertEquals("ação" to false, Transcribe.clean("ação"))
+        assertEquals("\"Matrícula\"" to false, Transcribe.clean("“Matrícula”"))
+        assertEquals("28m²" to false, Transcribe.clean("28m²"))
+        val t = Transcribe.pageTokens(listOf(line(0, 0, "đado".to(0.99f))), 0.6f).first()
+        assertEquals("dado", t.text)
+        assertEquals(1, Transcribe.level(t, 0.6f)) // shows as a doubt
+    }
 }
