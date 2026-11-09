@@ -24,32 +24,45 @@ data class OLine(val words: List<OWord>) {
 object Transcribe {
     const val ILEGIVEL = "(ilegível)"
 
-    fun page(lines: List<OLine>, minConf: Float): String {
+    /** A piece of the text. conf = how sure the reader was of this word; null for spaces, line breaks and headers. */
+    data class Tok(val text: String, val conf: Float? = null)
+
+    /** How sure: 3 = sure (90% or more), 2 = fairly sure, 1 = unsure, 0 = illegible. */
+    fun level(t: Tok, minConf: Float): Int? {
+        val c = t.conf ?: return null
+        return when { c < minConf -> 0; c < 0.75f -> 1; c < 0.9f -> 2; else -> 3 }
+    }
+
+    fun pageTokens(lines: List<OLine>, minConf: Float): List<Tok> {
         val rows = rows(lines.filter { it.words.isNotEmpty() })
-        if (rows.isEmpty()) return ILEGIVEL
+        if (rows.isEmpty()) return listOf(Tok(ILEGIVEL, 0f))
         val heights = rows.map { r -> r.maxOf { it.h } }.sorted()
         val typical = max(1, heights[heights.size / 2])
-        val out = StringBuilder()
+        val out = mutableListOf<Tok>()
         var prevBottom: Int? = null
         for (row in rows) {
             val top = row.minOf { it.t }
-            if (prevBottom != null) {
-                out.append('\n')
-                if (top - prevBottom > typical * 1.2f) out.append('\n')
-            }
-            out.append(rowText(row, minConf, typical))
+            if (prevBottom != null) out += Tok(if (top - prevBottom > typical * 1.2f) "\n\n" else "\n")
+            rowTokens(row, minConf, typical, out)
             prevBottom = row.maxOf { it.b }
         }
-        return out.toString()
+        return out
     }
 
-    fun document(name: String, pages: List<List<OLine>>, minConf: Float): String = buildString {
-        append(name).append('\n')
+    fun page(lines: List<OLine>, minConf: Float) = pageTokens(lines, minConf).joinToString("") { it.text }
+
+    fun documentTokens(name: String, pages: List<List<OLine>>, minConf: Float): List<Tok> {
+        val out = mutableListOf(Tok(name + "\n"))
         pages.forEachIndexed { i, p ->
-            append("\n— Página ${i + 1} —\n\n")
-            append(page(p, minConf)).append('\n')
+            out += Tok("\n— Página ${i + 1} —\n\n")
+            out += pageTokens(p, minConf)
+            out += Tok("\n")
         }
+        return out
     }
+
+    fun document(name: String, pages: List<List<OLine>>, minConf: Float) =
+        documentTokens(name, pages, minConf).joinToString("") { it.text }
 
     /** Groups lines that sit at the same height (for example "Matrícula 321 ..." on the left and "Nº Anterior" on the right). */
     fun rows(lines: List<OLine>): List<List<OLine>> {
@@ -67,20 +80,21 @@ object Transcribe {
         return rows.map { r -> r.sortedBy { it.l } }
     }
 
-    private fun rowText(row: List<OLine>, minConf: Float, typical: Int): String {
-        val parts = StringBuilder()
+    private fun rowTokens(row: List<OLine>, minConf: Float, typical: Int, out: MutableList<Tok>) {
         var lastRight: Int? = null
-        var lastWasIllegible = false
+        var lastIllegible: Int? = null // index of the last "(ilegível)" in out, while illegible words keep coming
         for (ln in row) {
             for (w in ln.words.sortedBy { it.l }) {
                 val illegible = w.conf < minConf
-                if (illegible && lastWasIllegible) { lastRight = w.r; continue }
-                if (lastRight != null) parts.append(if (w.l - lastRight > typical * 2.5f) "   " else " ")
-                parts.append(if (illegible) ILEGIVEL else w.text)
-                lastRight = w.r; lastWasIllegible = illegible
+                if (illegible && lastIllegible != null) {
+                    out[lastIllegible] = Tok(ILEGIVEL, min(out[lastIllegible].conf!!, w.conf)); lastRight = w.r; continue
+                }
+                if (lastRight != null) out += Tok(if (w.l - lastRight > typical * 2.5f) "   " else " ")
+                out += Tok(if (illegible) ILEGIVEL else w.text, w.conf)
+                lastIllegible = if (illegible) out.size - 1 else null
+                lastRight = w.r
             }
         }
-        return parts.toString()
     }
 
     /** Average sureness, weighted by word length: used to choose between the original and the cleaned-up picture. */

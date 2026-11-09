@@ -626,7 +626,9 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
             error = "Não consegui ler as páginas: ${e.message ?: e.javaClass.simpleName}"
         }
     }
-    val text = pages?.let { Transcribe.document(scan.name, it, minConf) }
+    val tokens = pages?.let { Transcribe.documentTokens(scan.name, it, minConf) }
+    val text = tokens?.joinToString("") { it.text }
+    var colors by remember { mutableStateOf(true) }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -664,16 +666,31 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
                 }
             }
         } else {
-            val shown = remember(text) {
+            val toks = tokens!!
+            val shown = remember(toks, colors) {
                 buildAnnotatedString {
-                    val parts = text.split(Transcribe.ILEGIVEL)
-                    parts.forEachIndexed { i, part ->
-                        append(part)
-                        if (i < parts.size - 1) withStyle(SpanStyle(color = C.warn)) { append(Transcribe.ILEGIVEL) }
+                    for (t in toks) {
+                        val lv = if (colors) Transcribe.level(t, minConf) else null
+                        if (lv == null || lv == 3) append(t.text)
+                        else withStyle(SpanStyle(color = SURE[lv], background = SURE_BG[lv])) { append(t.text) }
                     }
                 }
             }
-            val count = text.split(Transcribe.ILEGIVEL).size - 1
+            val words = toks.filter { it.conf != null }
+            val count = words.count { it.text == Transcribe.ILEGIVEL }
+            val letters = words.sumOf { it.text.length }.coerceAtLeast(1)
+            val surePct = words.filter { Transcribe.level(it, minConf) == 3 }.sumOf { it.text.length } * 100 / letters
+            // legend
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Legend(C.text, "Certeza (90%+)")
+                Legend(SURE[2], "Quase certo")
+                Legend(SURE[1], "Dúvida")
+                Legend(SURE[0], "Ilegível")
+                Text(if (colors) "Tirar cores" else "Mostrar cores", color = C.accent, fontSize = 12.sp, modifier = Modifier.clickable { colors = !colors })
+            }
             Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(10.dp)).background(C.surface)) {
                 SelectionContainer(Modifier.verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(12.dp)) {
                     Text(shown, color = C.text, fontSize = 12.sp, lineHeight = 17.sp, fontFamily = FontFamily.Monospace)
@@ -681,7 +698,7 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Marcar (ilegível) abaixo de", color = C.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("Ilegível abaixo de", color = C.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
                     Text("${(minConf * 100).toInt()}% de certeza", color = C.dim, fontSize = 13.sp)
                 }
                 Slider(
@@ -690,7 +707,8 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
                     modifier = Modifier.height(34.dp),
                 )
                 Text(
-                    (if (count == 0) "Nenhum trecho ilegível." else if (count == 1) "1 trecho ilegível." else "$count trechos ilegíveis.") +
+                    "$surePct% do texto com certeza alta. " +
+                        (if (count == 0) "Nenhum trecho ilegível." else if (count == 1) "1 trecho ilegível." else "$count trechos ilegíveis.") +
                         " Nada é corrigido: erros do original ficam como estão. A leitura pode confundir letras parecidas, então confira com a foto.",
                     color = C.dim, fontSize = 12.sp,
                 )
@@ -706,6 +724,19 @@ private fun TextScreen(scan: Scan, store: Store, onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/** Colors by how sure the reader was: 0 illegible, 1 unsure, 2 fairly sure (3 = sure, normal text). */
+private val SURE = listOf(Color(0xFFF07A7A), Color(0xFFF0A86E), Color(0xFFE6D58A))
+private val SURE_BG = listOf(Color(0x33F07A7A), Color(0x1FF0A86E), Color.Transparent)
+
+@Composable
+private fun Legend(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(9.dp).clip(RoundedCornerShape(50)).background(color))
+        Spacer(Modifier.width(5.dp))
+        Text(label, color = C.dim, fontSize = 12.sp)
     }
 }
 

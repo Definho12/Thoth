@@ -50,4 +50,12 @@ class TranscribeTest {
         val l = listOf("foto 10.jpg", "foto 2.jpg", "Foto 1.jpg").sortedWith(Transcribe.naturalOrder)
         assertEquals(listOf("Foto 1.jpg", "foto 2.jpg", "foto 10.jpg"), l)
     }
+
+    @Test fun eachWordKeepsHowSureItWas() {
+        val lines = listOf(line(0, 0, "Valente".to(0.97f), "casado".to(0.8f), "Souza".to(0.65f), "xx".to(0.3f), "yy".to(0.1f)))
+        val t = Transcribe.pageTokens(lines, 0.6f).filter { it.conf != null }
+        assertEquals(listOf("Valente", "casado", "Souza", "(ilegível)"), t.map { it.text })
+        assertEquals(listOf(3, 2, 1, 0), t.map { Transcribe.level(it, 0.6f) })
+        assertEquals(0.1f, t.last().conf!!, 1e-6f)
+    }
 }
