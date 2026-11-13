@@ -42,9 +42,9 @@ object Ocr {
      * is more sure about. The result is kept next to the page, so it is not read twice.
      */
     fun readPage(store: Store, scan: Scan, p: Page): List<OLine> {
-        val cache = File(store.dir(scan.id), "ocr_${p.file}_${p.rotation}.json")
+        val cache = File(store.dir(scan.id), "ocr_${p.file}_${p.rotation}_${if (scan.flatten) "d" else "o"}.json")
         runCatching { if (cache.exists()) return fromJson(cache.readText()) }
-        val photo = Photos.load(store.pageFile(scan, p), p.rotation, 3000)
+        val photo = try { Photos.loadPage(store, scan, p, 3000) } catch (e: OutOfMemoryError) { System.gc(); Photos.loadPage(store, scan, p, 2000) }
         val asIs = read(photo)
         val method = if (scan.method == Method.FUNDO || scan.method == Method.COMBINADO || scan.method == Method.CANAL) scan.method else Method.FUNDO
         val settings = if (method == scan.method) scan.settings else Settings.defaultFor(method)

@@ -364,11 +364,22 @@ private fun ScanScreen(initial: Scan, store: Store, onBack: () -> Unit, onDelete
 
     val page = scan.pages.getOrNull(cur)
     // load the current page
-    LaunchedEffect(page?.file, page?.rotation) {
-        scale = 1f; offset = Offset.Zero
+    var bendNote by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(page?.file, page?.rotation, scan.flatten) {
+        scale = 1f; offset = Offset.Zero; bendNote = null
         if (page == null) { preview = null; previewImg = null; shown = null; return@LaunchedEffect }
         val b = withContext(Dispatchers.IO) { runCatching { Photos.load(store.pageFile(scan, page), page.rotation, Photos.PREVIEW) }.getOrNull() }
-        preview = b; previewImg = b?.let { withContext(Dispatchers.Default) { Photos.toImg(it) } }; shown = null
+        preview = b
+        if (b == null) { previewImg = null; return@LaunchedEffect }
+        val use = if (!scan.flatten) b else withContext(Dispatchers.Default) {
+            val info = Photos.bendInfo(store, scan, page)
+            bendNote = if (info.model != null) "Página desentortada" else when {
+                info.why.startsWith("a página já") -> "Já estava reta"
+                else -> "Não desentortei: ${info.why}"
+            }
+            info.model?.let { Photos.straighten(b, it) } ?: b
+        }
+        previewImg = withContext(Dispatchers.Default) { Photos.toImg(use) }; shown = null
     }
     // live processing
     LaunchedEffect(Unit) {
@@ -469,6 +480,11 @@ private fun ScanScreen(initial: Scan, store: Store, onBack: () -> Unit, onDelete
                     .pointerInput(Unit) { detectTapGestures(onPress = { holdOriginal = true; tryAwaitRelease(); holdOriginal = false }) }
                     .padding(horizontal = 12.dp, vertical = 7.dp),
             ) { Text("Segure: original", color = if (holdOriginal) C.onAccent else C.text, fontSize = 13.sp) }
+            val bn = bendNote
+            if (bn != null && page != null && !holdOriginal) Box(
+                Modifier.align(Alignment.BottomEnd).padding(10.dp).clip(RoundedCornerShape(50))
+                    .background(Color(0xCC1C1E21)).padding(horizontal = 12.dp, vertical = 7.dp),
+            ) { Text(bn, color = C.dim, fontSize = 12.sp) }
             val t = toast
             if (t != null) Box(
                 Modifier.align(Alignment.TopCenter).padding(10.dp).clip(RoundedCornerShape(10.dp))
@@ -511,6 +527,7 @@ private fun ScanScreen(initial: Scan, store: Store, onBack: () -> Unit, onDelete
         ) {
             Pill("‹ Mover", onClick = { move(-1) })
             Pill("Mover ›", onClick = { move(1) })
+            Pill(if (scan.flatten) "Desentortar: sim" else "Desentortar: não", selected = scan.flatten, onClick = { update(scan.copy(flatten = !scan.flatten)) })
             Pill("Girar", onClick = { rotate() })
             Pill("Remover", onClick = { confirmRemove = true })
             Pill("Lado a lado", onClick = { grid = true })

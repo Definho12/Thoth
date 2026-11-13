@@ -19,6 +19,7 @@ data class Scan(
     val pages: List<Page>,
     val method: Method = Method.FUNDO,
     val settings: Settings = Settings.defaultFor(Method.FUNDO),
+    val flatten: Boolean = true,
 )
 
 /**
@@ -77,7 +78,7 @@ class Store(private val ctx: Context) {
 
     fun save(s: Scan) {
         val o = JSONObject()
-            .put("id", s.id).put("name", s.name).put("created", s.created).put("method", s.method.name)
+            .put("id", s.id).put("name", s.name).put("created", s.created).put("method", s.method.name).put("flatten", s.flatten)
             .put("pages", JSONArray().apply { s.pages.forEach { put(JSONObject().put("file", it.file).put("rot", it.rotation)) } })
             .put("settings", JSONObject()
                 .put("bgSize", s.settings.bgSize.toDouble()).put("clip", s.settings.clip.toDouble())
@@ -107,7 +108,7 @@ class Store(private val ctx: Context) {
         return Scan(
             o.getString("id"), o.getString("name"), o.getLong("created"),
             List(pa.length()) { val p = pa.getJSONObject(it); Page(p.getString("file"), p.optInt("rot", 0)) },
-            method, settings,
+            method, settings, o.optBoolean("flatten", true),
         )
     }
 }

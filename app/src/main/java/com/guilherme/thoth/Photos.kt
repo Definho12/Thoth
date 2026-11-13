@@ -8,6 +8,7 @@ import android.graphics.Matrix
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import com.guilherme.thoth.core.Flatten
 import com.guilherme.thoth.core.Img
 import com.guilherme.thoth.core.Ink
 import com.guilherme.thoth.core.Method
@@ -37,6 +38,43 @@ object Photos {
         return Bitmap.createBitmap(argb, 0, 0, argb.width, argb.height, m, true)
     }
 
+    /** The page as it should be used: desentortada (straightened) when that is on for this matrícula. */
+    fun loadPage(store: Store, scan: Scan, p: Page, maxSide: Int): Bitmap {
+        val raw = load(store.pageFile(scan, p), p.rotation, maxSide)
+        if (!scan.flatten) return raw
+        val m = bend(store, scan, p) ?: return raw
+        return straighten(raw, m)
+    }
+
+    fun straighten(b: Bitmap, m: Flatten.Model): Bitmap {
+        val px = IntArray(b.width * b.height)
+        b.getPixels(px, 0, b.width, 0, 0, b.width, b.height)
+        return Bitmap.createBitmap(Flatten.applyArgb(px, b.width, b.height, m), b.width, b.height, Bitmap.Config.ARGB_8888)
+    }
+
+    /** Measures how bent the page is (once; kept next to the page). Null = leave it as it is. */
+    fun bend(store: Store, scan: Scan, p: Page): Flatten.Model? = bendInfo(store, scan, p).model
+
+    fun bendInfo(store: Store, scan: Scan, p: Page): Flatten.Found {
+        val f = File(store.dir(scan.id), "flat_${p.file}_${p.rotation}.json")
+        runCatching {
+            if (f.exists()) {
+                val o = org.json.JSONObject(f.readText())
+                val c = o.optJSONArray("m")
+                val model = c?.let { a -> Flatten.Model.fromList(List(a.length()) { a.getDouble(it) }) }
+                return Flatten.Found(model, o.optInt("lines"), o.optDouble("shift"), o.optString("why"), o.optDouble("wobble"))
+            }
+        }
+        val found = runCatching { Flatten.measure(toImg(load(store.pageFile(scan, p), p.rotation, 1400))) }
+            .getOrElse { Flatten.Found(null, 0, 0.0, "erro ao medir") }
+        runCatching {
+            val o = org.json.JSONObject().put("lines", found.lines).put("shift", found.maxShift).put("why", found.why).put("wobble", found.wobble)
+            found.model?.let { o.put("m", org.json.JSONArray(it.toList())) }
+            f.writeText(o.toString())
+        }
+        return found
+    }
+
     fun toImg(b: Bitmap): Img {
         val p = IntArray(b.width * b.height)
         b.getPixels(p, 0, b.width, 0, 0, b.width, b.height)
@@ -56,7 +94,7 @@ object Photos {
         val pages = scan.pages.mapIndexed { i, p ->
             progress(i + 1)
             fun at(side: Int): PdfPage {
-                val src = toImg(load(store.pageFile(scan, p), p.rotation, side))
+                val src = toImg(loadPage(store, scan, p, side))
                 val out = toBitmap(Ink.process(src, scan.method, scan.settings).img)
                 val bytes = ByteArrayOutputStream().also { out.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
                 return PdfPage(bytes, out.width, out.height)
